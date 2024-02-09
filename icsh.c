@@ -72,7 +72,21 @@ int main(int argc, char *argv[]) {
         while (1) {
             printf("%s@icsh ~ %% ", username);
             fgets(buffer, MAX_CMD_BUFFER, stdin);
-            if (strncmp(buffer, "echo", 4) == 0) {
+            if (strchr(buffer, '>') != NULL) {
+                char *command, *file;
+                command = strtok(buffer, ">");
+                file = strtok(NULL, "");
+                file[strcspn(file, "\n")] = '\0';
+                FILE *a = popen(command, "r");
+                char buf[1000];
+                FILE *fptr;
+                fptr = fopen(file+1, "w");
+                while (fgets(buf, sizeof(buf), a) != 0) {
+                    fputs(buf, fptr);
+                }
+                pclose(a);
+                fclose(fptr);
+            } else if (strncmp(buffer, "echo", 4) == 0) {
                 printf("%s", (buffer+5));
             } else if (strcmp(buffer, "!!\n") == 0) {
                 printf("%s", last_buffer);
