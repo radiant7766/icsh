@@ -13,27 +13,60 @@
 
 #define MAX_CMD_BUFFER 255
 pid_t pid;
+struct Node* head;
+int dontprint = 0;
 
+struct Node {
+    int jobID;
+    pid_t pid;
+    int free;
+    char command[255];
+    struct Node* next;
+};
+
+struct Node* createNode(int jobID, pid_t pid, int free, char command[255]) {
+    struct Node* newNode = (struct Node*)malloc(sizeof(struct Node));
+    newNode->jobID = jobID;
+    newNode->pid = pid;
+    newNode->free = free;
+    strcpy(newNode->command, command);
+    newNode->next = NULL;
+    return newNode;
+}
 void handle_signal(int sig) 
 {   
-    printf("\n");
-    if (pid != 0) {
-        if (sig == 2) {
+    if (sig == 2) {
+        if (pid != 0) {
+            printf("\n");
             kill(pid, SIGKILL);
-        } else if (sig == 18) {
-            kill(pid, SIGSTOP);
         }
+    } else if (sig == 18) {
+        if (pid != 0) {
+            printf("\n");
+            kill(pid, SIGKILL);
+        }
+    } else {
+        struct Node* j = head;
+        int c = 1;
+        while(c) {
+            if (waitpid(j->pid, 0, WNOHANG) > 0) {
+                j->free = 1;
+                strcpy(j->command, "");
+                c = 0;
+            } else {
+                j = j->next;
+            }
+        }             
     }
 } 
 
 int main(int argc, char *argv[]) {
     signal(SIGINT, handle_signal);
     signal(SIGTSTP, handle_signal);
+    signal(SIGCHLD, handle_signal);
     if (argc > 3) {
         return 1;
     } else if (argc == 2) {
-        int x = fork();
-        if (x == 0) {
             char prevLine[100];
             char line[100];
             FILE *fptr;
@@ -46,7 +79,7 @@ int main(int argc, char *argv[]) {
                 } else if (strncmp(line, "exit", 3) == 0) {
                     if (isdigit(*(line+5))) {
                         printf("%d", atoi((line+5)));
-                        return atoi((line+5));
+                        return 0;
                     } else {
                         printf("exit code must be numbers only!\n");
                     }
@@ -57,12 +90,8 @@ int main(int argc, char *argv[]) {
                 }
                 strcpy(prevLine, line);
             }
-        } else {
-            pid = x;
-        }
-        waitpid(-1, 0, WUNTRACED);
-        return 0;
     } else {
+        head = createNode(1, 0, 1, "");
         char buffer[MAX_CMD_BUFFER];
         char last_buffer[MAX_CMD_BUFFER];
         char* username = getenv("USER"); 
@@ -70,7 +99,11 @@ int main(int argc, char *argv[]) {
             username = "user";
         }
         while (1) {
-            printf("%s@icsh ~ %% ", username);
+            if (dontprint) {
+                dontprint = 0;
+            } else {
+                printf("%s@icsh ~ %% ", username);
+            }
             fgets(buffer, MAX_CMD_BUFFER, stdin);
             if (strchr(buffer, '>') != NULL) {
                 char *command, *file;
@@ -97,12 +130,54 @@ int main(int argc, char *argv[]) {
                 } else {
                     printf("exit code must be numbers only!\n");
                 }
-            } else if (strcmp(buffer, "fg\n") == 0) {
-                if (pid != 0) {
-                    kill(pid, SIGCONT);
-                    int status;
-                    waitpid(pid, &status, WNOHANG);
-                    printf("%d", status);
+            } else if (strncmp(buffer, "fg", 2) == 0) {
+                char *job = strchr(buffer, '%');
+                if (job != NULL)
+                {
+                    job++;
+                    int job_id = atoi(job);
+                    struct Node* j = head;
+                    int c = 1;
+                    pid_t pid;
+                    char command[255];
+                    while(c) {
+                        if (j->jobID == job_id) {
+                            pid = j->pid;
+                            strcpy(command, j->command);
+                            c = 0;
+                        } else {
+                            if (j->next != NULL) {
+                                j = j->next;
+                            } else {
+                                c = 0;
+                            }
+                        }
+                    }
+                    printf("%s", command);
+                    dontprint = 1;
+                    waitpid(pid, 0, WUNTRACED);
+                }
+            } else if (strncmp(buffer, "bg", 2) == 0) {
+                kill(pid, SIGCONT);
+                printf("continued %s", last_buffer);
+            } else if (strcmp(buffer, "jobs\n") == 0) {
+                struct Node* j = head;
+                int c = 1;
+                while(c) {
+                    if (j->free == 0) {
+                        printf("[%d]  Running        %s", j->jobID, j->command);
+                        if (j->next != NULL) {
+                            j = j->next;
+                        } else {
+                            c = 0;
+                        }
+                    } else {
+                        if (j->next != NULL) {
+                            j = j->next;
+                        } else {
+                            c = 0;
+                        }
+                    }
                 }
             } else {
                 if (strcmp(buffer, "\n") == 0) {
@@ -110,15 +185,48 @@ int main(int argc, char *argv[]) {
                 } else {
                     size_t len = strlen(buffer);
                     if (buffer[len-2] == '&') {
+                        struct Node* j = head;
+                        int c = 1;
+                        int a = 2;
+                        int id = 0;
+                        while(c) {
+                            if (j->free) {
+                                strcpy(j->command, buffer);
+                                j->free = 0;
+                                id = j->jobID;
+                                c = 0;
+                            } else {
+                                if (j->next == NULL) {
+                                    struct Node* newNode = createNode(a, 0, 0, buffer);
+                                    j->next = newNode;
+                                    id = a;
+                                    c = 0;
+                                } else {
+                                    j = j->next;
+                                    a++;
+                                }
+                            }
+                        }
                         int x = fork();
                         if (x == 0) {
                             buffer[len-3] = '\n';
                             buffer[len-2] = '\0';
                             system(buffer);
+                            printf("\n[%d] Done       %s\n", id, buffer);
+                            printf("%s@icsh ~ %% ", username);
                             return 0;
                         } else {
-
-                            printf("[1] %d\n", x);
+                            printf("[%d] %d\n", id, x);
+                            struct Node* j = head;
+                            int c = 1;
+                            while(c) {
+                                if (j->jobID == id) {
+                                    j->pid = x;
+                                    c = 0;
+                                } else {
+                                    j = j->next;
+                                }
+                            }
                         }
                     } else {
                         int x = fork();
@@ -127,7 +235,7 @@ int main(int argc, char *argv[]) {
                             return 0;
                         } else {
                             pid = x;
-                            waitpid(-1, 0, WUNTRACED);
+                            waitpid(pid, 0, WUNTRACED);
                         }
                     }
                 }
